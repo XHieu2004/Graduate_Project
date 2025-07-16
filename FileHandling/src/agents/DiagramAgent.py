@@ -7,6 +7,7 @@ from config import settings
 from agents.schema.ClassDiagramSchema import VALIDATE_SCHEMA_CLASS_DIAGRAM, JSON_CLASS_DIAGRAM_SCHEMA_STRING
 from agents.schema.SequenceDiagramSchema import VALIDATE_SCHEMA_SEQUENCE_DIAGRAM
 from agents.schema.DatabaseDiagramSchema import VALIDATE_SCHEMA_DATABASE_DIAGRAM, JSON_DATABASE_DIAGRAM_SCHEMA_STRING
+from agents.schema.UseCaseDiagramSchema import VALIDATE_SCHEMA_USE_CASE_DIAGRAM, JSON_USE_CASE_DIAGRAM_SCHEMA_STRING
 from agents.MultimodalMixin import MultimodalMixin
 
 
@@ -132,8 +133,64 @@ Generate a complete, valid JSON diagram that represents the project structure an
             # Build context information
             context_info = self._build_context_string()
             
-            # Create the system message for diagram editing
-            system_message = f"""You are a UML diagram expert. Analyze the user's instructions and return ONLY a JSON object describing the changes needed.
+            # Create the system message for diagram editing based on diagram type
+            if diagram_type == "Use Case Diagram":
+                system_message = f"""You are a UML diagram expert. Analyze the user's instructions and return ONLY a JSON object describing the changes needed.
+
+Project Context:
+{context_info}
+
+Current Diagram Type: {diagram_type}
+
+Return a JSON object with this exact structure:
+{{
+  "changes": {{
+    "actors": {{
+      "add": [
+        {{
+          "name": "string", // Name of the actor (e.g., "User", "Admin")
+          "description": "string" // Description of the actor
+        }}
+      ],
+      "remove": ["ActorNameToRemove1", "ActorNameToRemove2"]
+    }},
+    "useCases": {{
+      "add": [
+        {{
+          "name": "string", // Name of the use case (e.g., "Login", "Place Order")
+          "description": "string" // Description of the use case
+        }}
+      ],
+      "remove": ["UseCaseNameToRemove1", "UseCaseNameToRemove2"]
+    }},
+    "relationships": {{
+      "add": [
+        {{
+          "from": "ActorName",
+          "to": "UseCaseName", 
+          "type": "association"
+        }}
+      ],
+      "remove": [
+        {{
+          "from": "ActorName",
+          "to": "UseCaseName",
+          "type": "association"
+        }}
+      ]
+    }}
+  }}
+}}
+
+Guidelines:
+- Return ONLY the JSON change object
+- Only include changes that are actually needed based on the instructions
+- Use empty arrays [] for sections with no changes
+- Be specific about actor names and use case names
+- When images are provided, use them to understand context for the changes"""
+            else:
+                # Default to class diagram structure
+                system_message = f"""You are a UML diagram expert. Analyze the user's instructions and return ONLY a JSON object describing the changes needed.
 
 Project Context:
 {context_info}
@@ -251,7 +308,7 @@ Return the JSON change object describing exactly what needs to be added or remov
             
         change_data = changes["changes"]
         
-        # Apply class changes
+        # Apply class changes (for class diagrams)
         if "classes" in change_data:
             class_changes = change_data["classes"]
             
@@ -275,6 +332,54 @@ Return the JSON change object describing exactly what needs to be added or remov
                     if new_class.get("name") not in existing_names:
                         modified["classes"].append(new_class)
         
+        # Apply actor changes (for use case diagrams)
+        if "actors" in change_data:
+            actor_changes = change_data["actors"]
+            
+            # Remove actors
+            if "remove" in actor_changes:
+                actors_to_remove = set(actor_changes["remove"])
+                if "actors" in modified:
+                    modified["actors"] = [
+                        actor for actor in modified["actors"]
+                        if actor.get("name") not in actors_to_remove
+                    ]
+            
+            # Add actors
+            if "add" in actor_changes:
+                if "actors" not in modified:
+                    modified["actors"] = []
+                
+                for new_actor in actor_changes["add"]:
+                    # Check if actor already exists
+                    existing_names = {actor.get("name") for actor in modified["actors"]}
+                    if new_actor.get("name") not in existing_names:
+                        modified["actors"].append(new_actor)
+        
+        # Apply use case changes (for use case diagrams)
+        if "useCases" in change_data:
+            usecase_changes = change_data["useCases"]
+            
+            # Remove use cases
+            if "remove" in usecase_changes:
+                usecases_to_remove = set(usecase_changes["remove"])
+                if "useCases" in modified:
+                    modified["useCases"] = [
+                        uc for uc in modified["useCases"]
+                        if uc.get("name") not in usecases_to_remove
+                    ]
+            
+            # Add use cases
+            if "add" in usecase_changes:
+                if "useCases" not in modified:
+                    modified["useCases"] = []
+                
+                for new_usecase in usecase_changes["add"]:
+                    # Check if use case already exists
+                    existing_names = {uc.get("name") for uc in modified["useCases"]}
+                    if new_usecase.get("name") not in existing_names:
+                        modified["useCases"].append(new_usecase)
+        
         # Apply relationship changes
         if "relationships" in change_data:
             rel_changes = change_data["relationships"]
@@ -287,7 +392,10 @@ Return the JSON change object describing exactly what needs to be added or remov
                             rel for rel in modified["relationships"]
                             if not (rel.get("fromClass") == rel_to_remove.get("from") and
                                    rel.get("toClass") == rel_to_remove.get("to") and
-                                   rel.get("type") == rel_to_remove.get("type"))
+                                   rel.get("type") == rel_to_remove.get("type")) and
+                            not (rel.get("from") == rel_to_remove.get("from") and
+                                 rel.get("to") == rel_to_remove.get("to") and
+                                 rel.get("type") == rel_to_remove.get("type"))
                         ]
             
             # Add relationships
@@ -296,11 +404,14 @@ Return the JSON change object describing exactly what needs to be added or remov
                     modified["relationships"] = []
                 
                 for new_rel in rel_changes["add"]:
-                    # Check if relationship already exists
+                    # Check if relationship already exists (handle both formats)
                     exists = any(
-                        rel.get("fromClass") == new_rel.get("fromClass") and
-                        rel.get("toClass") == new_rel.get("toClass") and
-                        rel.get("type") == new_rel.get("type")
+                        (rel.get("fromClass") == new_rel.get("fromClass") and
+                         rel.get("toClass") == new_rel.get("toClass") and
+                         rel.get("type") == new_rel.get("type")) or
+                        (rel.get("from") == new_rel.get("from") and
+                         rel.get("to") == new_rel.get("to") and
+                         rel.get("type") == new_rel.get("type"))
                         for rel in modified["relationships"]
                     )
                     if not exists:
@@ -374,6 +485,15 @@ Required JSON Schema:
 
 The response must be valid JSON matching this exact structure."""
         
+        elif diagram_type == "Use Case Diagram":
+            return f"""
+Target Diagram Type: Use Case Diagram
+
+Required JSON Schema:
+{JSON_USE_CASE_DIAGRAM_SCHEMA_STRING}
+
+The response must be valid JSON matching this exact structure."""
+        
         else:
             # Generic diagram structure
             return """
@@ -444,6 +564,8 @@ Adapt this structure based on the specific diagram type requested."""
                 return "diagramName" in data and "participants" in data and "messages" in data
             elif diagram_type == "Database Diagram":
                 return "diagramName" in data and "tables" in data
+            elif diagram_type == "Use Case Diagram":
+                return "diagramName" in data and "actors" in data and "useCases" in data
             else:
                 return "diagramName" in data
                 
